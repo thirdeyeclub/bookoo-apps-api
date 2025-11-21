@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import funnelsRouter from './routes/funnels.js';
+import authRouter from './routes/auth.js';
 
 dotenv.config();
 
@@ -15,6 +16,7 @@ app.get('/', (req, res) => {
   res.json({ status: 'running' });
 });
 
+app.use('/auth', authRouter);
 app.use('/funnels', funnelsRouter);
 
 if (process.env.NODE_ENV !== 'production') {
