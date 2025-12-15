@@ -3,6 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import funnelsRouter from './routes/funnels.js';
 import authRouter from './routes/auth.js';
+import analyticsRouter from './routes/analytics.js';
 
 dotenv.config();
 
@@ -18,6 +19,7 @@ app.get('/', (req, res) => {
 
 app.use('/auth', authRouter);
 app.use('/funnels', funnelsRouter);
+app.use('/analytics', analyticsRouter);
 
 if (process.env.NODE_ENV !== 'production') {
   app.listen(PORT, () => {
