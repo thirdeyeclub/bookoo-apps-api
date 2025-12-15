@@ -135,6 +135,87 @@ router.post('/pages/:id/publish', async (req, res) => {
   }
 });
 
+router.patch('/pages/:id', async (req, res) => {
+  try {
+    const idRaw = req.params.id;
+    const id = Number(idRaw);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id' });
+
+    const created_by_user_id = parseNonEmptyString(req.body?.created_by_user_id);
+    if (!created_by_user_id) return res.status(400).json({ error: 'created_by_user_id is required' });
+
+    const cfg = typeof req.body?.config === 'object' && req.body?.config ? req.body.config : {};
+    const headline = typeof cfg.headline === 'string' ? cfg.headline.trim() : null;
+    const detail_line = typeof cfg.detail_line === 'string' ? cfg.detail_line.trim() : null;
+    const logo_url = typeof cfg.logo_url === 'string' ? cfg.logo_url.trim() : null;
+
+    const { data: existing, error: existingErr } = await supabase
+      .from('splash_pages')
+      .select('id,config,created_by_user_id')
+      .eq('id', id)
+      .maybeSingle();
+    if (existingErr) return res.status(500).json({ error: existingErr.message });
+    if (!existing) return res.status(404).json({ error: 'Page not found' });
+    if ((existing as any).created_by_user_id !== created_by_user_id) {
+      return res.status(403).json({ error: 'Not allowed' });
+    }
+
+    const existingConfig = (existing as any).config && typeof (existing as any).config === 'object' ? (existing as any).config : {};
+    const nextConfig = {
+      ...existingConfig,
+      headline: headline || null,
+      detail_line: detail_line || null,
+      logo_url: logo_url || null,
+    };
+
+    const { data, error } = await supabase
+      .from('splash_pages')
+      .update({ config: nextConfig })
+      .eq('id', id)
+      .eq('created_by_user_id', created_by_user_id)
+      .select()
+      .single();
+
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json(data);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message || 'Failed to update page' });
+  }
+});
+
+router.delete('/pages/:id', async (req, res) => {
+  try {
+    const idRaw = req.params.id;
+    const id = Number(idRaw);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id' });
+
+    const created_by_user_id = parseNonEmptyString(req.query.created_by_user_id) || parseNonEmptyString(req.body?.created_by_user_id);
+    if (!created_by_user_id) return res.status(400).json({ error: 'created_by_user_id is required' });
+
+    const { data: existing, error: existingErr } = await supabase
+      .from('splash_pages')
+      .select('id,created_by_user_id')
+      .eq('id', id)
+      .maybeSingle();
+    if (existingErr) return res.status(500).json({ error: existingErr.message });
+    if (!existing) return res.status(404).json({ error: 'Page not found' });
+    if ((existing as any).created_by_user_id !== created_by_user_id) {
+      return res.status(403).json({ error: 'Not allowed' });
+    }
+
+    const { error } = await supabase
+      .from('splash_pages')
+      .delete()
+      .eq('id', id)
+      .eq('created_by_user_id', created_by_user_id);
+
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ success: true });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message || 'Failed to delete page' });
+  }
+});
+
 router.get('/public/:slug', async (req, res) => {
   try {
     const slug = parseNonEmptyString(req.params.slug);
