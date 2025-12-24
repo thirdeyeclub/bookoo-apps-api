@@ -17,6 +17,22 @@ function parseCsv(value: unknown): string[] {
     .filter((s) => s.length > 0);
 }
 
+function parseRangeDays(value: unknown): number | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'string') {
+    const v = value.trim().toLowerCase();
+    if (v === '' || v === 'all' || v === '0') return null;
+    const n = Number(v);
+    if (n === 7 || n === 30) return n;
+    return null;
+  }
+  if (typeof value === 'number') {
+    if (value === 7 || value === 30) return value;
+    return null;
+  }
+  return null;
+}
+
 router.get('/user', async (req, res) => {
   try {
     const userToken = req.headers['x-whop-user-token'] as string;
@@ -101,6 +117,140 @@ router.get('/products/:companyId', async (req, res) => {
   } catch (err: any) {
     console.error('Products fetch error:', err);
     res.status(500).json({ error: err.message || 'Failed to fetch products' });
+  }
+});
+
+router.get('/revenue/:companyId', async (req, res) => {
+  try {
+    const { companyId } = req.params;
+    const productIds = parseCsv(req.query.product_ids || req.query.productIds);
+    if (productIds.length === 0) {
+      return res.status(400).json({ error: 'product_ids is required' });
+    }
+
+    const rangeDays = parseRangeDays(req.query.range_days ?? req.query.rangeDays);
+    const since =
+      rangeDays && Number.isFinite(rangeDays)
+        ? new Date(Date.now() - rangeDays * 24 * 60 * 60 * 1000).toISOString()
+        : null;
+
+    const payments: Array<{
+      id: string;
+      paid_at: string | null;
+      created_at: string;
+      status: any;
+      substatus: any;
+      currency: any;
+      product: { id: string; title: string | null } | null;
+      user: { id: string; username: string | null; email: string | null; name: string | null } | null;
+      gross: number;
+      net_after_fees: number;
+      refunded: number;
+      net: number;
+    }> = [];
+
+    const totalsByCurrency: Record<
+      string,
+      { gross: number; net_after_fees: number; refunded: number; net: number; count: number }
+    > = {};
+
+    const byProduct: Record<
+      string,
+      {
+        product_id: string;
+        product_title: string | null;
+        totals_by_currency: Record<
+          string,
+          { gross: number; net_after_fees: number; refunded: number; net: number; count: number }
+        >;
+      }
+    > = {};
+
+    for await (const p of sdk.payments.list({
+      company_id: companyId,
+      product_ids: productIds,
+      statuses: ['paid'] as any,
+      created_after: since,
+      order: 'paid_at',
+      direction: 'desc',
+      include_free: false,
+    } as any)) {
+      const currency = (p as any).currency || 'unknown';
+      const currencyKey = typeof currency === 'string' ? currency : String(currency);
+      const productId = (p as any).product?.id as string | undefined;
+      const productTitle = ((p as any).product?.title as string | undefined) ?? null;
+
+      const gross = typeof (p as any).total === 'number' ? (p as any).total : 0;
+      const netAfterFees = typeof (p as any).amount_after_fees === 'number' ? (p as any).amount_after_fees : 0;
+      const refunded = typeof (p as any).refunded_amount === 'number' ? (p as any).refunded_amount : 0;
+      const net = netAfterFees - refunded;
+
+      if (!totalsByCurrency[currencyKey]) {
+        totalsByCurrency[currencyKey] = { gross: 0, net_after_fees: 0, refunded: 0, net: 0, count: 0 };
+      }
+      totalsByCurrency[currencyKey].gross += gross;
+      totalsByCurrency[currencyKey].net_after_fees += netAfterFees;
+      totalsByCurrency[currencyKey].refunded += refunded;
+      totalsByCurrency[currencyKey].net += net;
+      totalsByCurrency[currencyKey].count += 1;
+
+      if (productId) {
+        if (!byProduct[productId]) {
+          byProduct[productId] = { product_id: productId, product_title: productTitle, totals_by_currency: {} };
+        }
+        if (!byProduct[productId].totals_by_currency[currencyKey]) {
+          byProduct[productId].totals_by_currency[currencyKey] = {
+            gross: 0,
+            net_after_fees: 0,
+            refunded: 0,
+            net: 0,
+            count: 0,
+          };
+        }
+        byProduct[productId].totals_by_currency[currencyKey].gross += gross;
+        byProduct[productId].totals_by_currency[currencyKey].net_after_fees += netAfterFees;
+        byProduct[productId].totals_by_currency[currencyKey].refunded += refunded;
+        byProduct[productId].totals_by_currency[currencyKey].net += net;
+        byProduct[productId].totals_by_currency[currencyKey].count += 1;
+      }
+
+      payments.push({
+        id: (p as any).id,
+        paid_at: (p as any).paid_at || null,
+        created_at: (p as any).created_at,
+        status: (p as any).status,
+        substatus: (p as any).substatus,
+        currency: (p as any).currency,
+        product: (p as any).product ? { id: (p as any).product.id, title: (p as any).product.title ?? null } : null,
+        user: (p as any).user
+          ? {
+              id: (p as any).user.id,
+              username: (p as any).user.username ?? null,
+              email: (p as any).user.email ?? null,
+              name: (p as any).user.name ?? null,
+            }
+          : null,
+        gross,
+        net_after_fees: netAfterFees,
+        refunded,
+        net,
+      });
+    }
+
+    const products = productIds.map((pid) => byProduct[pid]).filter(Boolean);
+
+    res.json({
+      companyId,
+      productIds,
+      rangeDays: rangeDays ?? 'all',
+      since,
+      totalsByCurrency,
+      products,
+      payments,
+    });
+  } catch (err: any) {
+    console.error('Revenue fetch error:', err);
+    res.status(500).json({ error: err.message || 'Failed to fetch revenue' });
   }
 });
 
