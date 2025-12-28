@@ -100,29 +100,39 @@ router.post('/capture', async (req, res) => {
         }
       }
 
-      const activeRes = await supabase
-        .from('product_memberships')
-        .select('user_id')
-        .eq('company_id', company_id)
-        .eq('product_id', productId)
-        .is('left_at', null);
+      const endedUserIds = new Set<string>();
 
-      if (activeRes.error) {
-        return res.status(500).json({ error: activeRes.error.message });
+      for await (const member of (activeSdk as any).members.list({
+        company_id,
+        product_ids: [productId],
+        statuses: ['left'],
+      } as any)) {
+        if (!member.user?.id) continue;
+        endedUserIds.add(member.user.id);
       }
 
-      const currentSet = new Set(members.map((m) => m.user_id));
-      const missing = (activeRes.data || [])
-        .map((r: any) => r.user_id as string)
-        .filter((id) => !currentSet.has(id));
+      const membershipsApi = (activeSdk as any).memberships;
+      if (membershipsApi && typeof membershipsApi.list === 'function') {
+        for await (const m of membershipsApi.list({
+          company_id,
+          product_ids: [productId],
+          statuses: ['canceled', 'expired'],
+        } as any)) {
+          const uid = m?.user?.id || m?.user_id;
+          if (!uid) continue;
+          const st = m?.status;
+          if (st !== 'canceled' && st !== 'expired') continue;
+          endedUserIds.add(uid);
+        }
+      }
 
-      if (missing.length > 0) {
+      if (endedUserIds.size > 0) {
         const leftRes = await supabase
           .from('product_memberships')
           .update({ left_at: snapshotAt })
           .eq('company_id', company_id)
           .eq('product_id', productId)
-          .in('user_id', missing);
+          .in('user_id', Array.from(endedUserIds));
 
         if (leftRes.error) {
           return res.status(500).json({ error: leftRes.error.message });
@@ -190,6 +200,7 @@ router.get('/cohorts', async (req, res) => {
       for (const pid of productIds) {
         const rows: Array<{ user_id: string; joined_at: string; last_seen_at: string; left_at: string | null }> = [];
         let activeCount = 0;
+        const endedUserIds = new Set<string>();
 
         for await (const member of activeSdk.members.list({
           company_id: companyId,
@@ -209,6 +220,34 @@ router.get('/cohorts', async (req, res) => {
           });
 
           if (member.status === 'joined') activeCount += 1;
+          if (member.status === 'left') endedUserIds.add(member.user.id);
+        }
+
+        const membershipsApi = (activeSdk as any).memberships;
+        if (membershipsApi && typeof membershipsApi.list === 'function') {
+          for await (const m of membershipsApi.list({
+            company_id: companyId,
+            product_ids: [pid],
+            statuses: ['canceled', 'expired'],
+          } as any)) {
+            const uid = m?.user?.id || m?.user_id;
+            if (!uid) continue;
+            const st = m?.status;
+            if (st !== 'canceled' && st !== 'expired') continue;
+            endedUserIds.add(uid);
+          }
+        }
+
+        if (endedUserIds.size > 0) {
+          for (const uid of endedUserIds) {
+            if (rows.some((r) => r.user_id === uid)) continue;
+            rows.push({
+              user_id: uid,
+              joined_at: snapshotAt,
+              last_seen_at: snapshotAt,
+              left_at: snapshotAt,
+            });
+          }
         }
 
         membershipsByProduct.set(pid, rows);

@@ -41,6 +41,16 @@ export type WhopSandboxMember = {
   user: WhopSandboxUser;
 };
 
+export type WhopSandboxMembership = {
+  id: string;
+  company_id: string;
+  product_id: string;
+  status: 'active' | 'canceled' | 'expired';
+  started_at: string | null;
+  ended_at: string | null;
+  user: WhopSandboxUser;
+};
+
 export type WhopSandboxPayment = {
   id: string;
   company_id: string;

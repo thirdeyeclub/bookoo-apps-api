@@ -1,5 +1,5 @@
 import type { Request } from 'express';
-import type { WhopSandboxMember, WhopSandboxPayment, WhopSandboxProduct, WhopSandboxUser } from './data/models.js';
+import type { WhopSandboxMember, WhopSandboxMembership, WhopSandboxPayment, WhopSandboxProduct, WhopSandboxUser } from './data/models.js';
 import { getStore } from './data/store.js';
 import { hashSeed } from './data/seed.js';
 
@@ -7,6 +7,7 @@ type VerifyUserTokenResult = { userId: string };
 
 type ProductsListArgs = { company_id: string };
 type MembersListArgs = { company_id: string; product_ids?: string[]; statuses?: string[] };
+type MembershipsListArgs = { company_id: string; product_ids?: string[]; statuses?: string[] };
 type PaymentsListArgs = {
   company_id: string;
   product_ids?: string[];
@@ -99,6 +100,18 @@ export function createFakeWhopSdk() {
           .filter((m) => (productSet.size > 0 ? productSet.has(m.product_id) : true))
           .filter((m) => (statusSet.size > 0 ? statusSet.has(m.status) : true))
           .sort((a, b) => ((a.most_recent_action_at || '') > (b.most_recent_action_at || '') ? -1 : 1));
+        for (const m of items) yield m;
+      },
+    },
+    memberships: {
+      async *list(args: MembershipsListArgs): AsyncIterable<WhopSandboxMembership> {
+        const productSet = new Set(args.product_ids || []);
+        const statusSet = new Set(args.statuses || []);
+        const items = store.memberships
+          .filter((m) => m.company_id === args.company_id)
+          .filter((m) => (productSet.size > 0 ? productSet.has(m.product_id) : true))
+          .filter((m) => (statusSet.size > 0 ? statusSet.has(m.status) : true))
+          .sort((a, b) => ((a.ended_at || a.started_at || '') > (b.ended_at || b.started_at || '') ? -1 : 1));
         for (const m of items) yield m;
       },
     },

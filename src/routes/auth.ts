@@ -334,7 +334,7 @@ router.get('/memberships/:companyId', async (req, res) => {
     }
 
     const statuses = parseCsv(req.query.statuses);
-    const statusFilter = statuses.length > 0 ? statuses : ['joined', 'left'];
+    const statusFilter = statuses.length > 0 ? statuses : ['left', 'canceled', 'expired'];
 
     const rows: Array<{
       productId: string;
@@ -346,22 +346,19 @@ router.get('/memberships/:companyId', async (req, res) => {
       };
       joinedAt?: string | null;
       leftAt?: string | null;
-      status?: string;
+      status?: 'left' | 'canceled' | 'expired';
       mostRecentAction?: string;
       mostRecentActionAt?: string;
     }> = [];
 
-    for (const productId of productIds) {
-      for await (const member of activeSdk.members.list({
+    async function addLeftMembers(productId: string) {
+      for await (const member of (activeSdk as any).members.list({
         company_id: companyId,
         product_ids: [productId],
-        statuses: statusFilter,
+        statuses: ['left'],
       } as any)) {
         if (!member.user?.id) continue;
-        const leftAt =
-          member.status === 'left'
-            ? (member.most_recent_action_at || null)
-            : null;
+        const leftAt = member.most_recent_action_at || null;
         rows.push({
           productId,
           user: {
@@ -372,10 +369,52 @@ router.get('/memberships/:companyId', async (req, res) => {
           },
           joinedAt: member.joined_at || null,
           leftAt,
-          status: member.status,
+          status: 'left',
           mostRecentAction: member.most_recent_action || undefined,
           mostRecentActionAt: member.most_recent_action_at || undefined,
         });
+      }
+    }
+
+    async function addEndedMemberships(productId: string) {
+      const membershipsApi = (activeSdk as any).memberships;
+      if (!membershipsApi || typeof membershipsApi.list !== 'function') return;
+      for await (const m of membershipsApi.list({
+        company_id: companyId,
+        product_ids: [productId],
+        statuses: ['canceled', 'expired'],
+      } as any)) {
+        const uid = m?.user?.id || m?.user_id;
+        if (!uid) continue;
+        const st = m?.status;
+        if (st !== 'canceled' && st !== 'expired') continue;
+        const endedAt =
+          m?.ended_at ||
+          m?.canceled_at ||
+          m?.expires_at ||
+          m?.updated_at ||
+          null;
+        rows.push({
+          productId,
+          user: {
+            id: uid,
+            username: m?.user?.username || undefined,
+            email: m?.user?.email || undefined,
+            name: m?.user?.name || undefined,
+          },
+          joinedAt: m?.started_at || m?.created_at || null,
+          leftAt: endedAt,
+          status: st,
+        });
+      }
+    }
+
+    for (const productId of productIds) {
+      if (statusFilter.includes('left')) {
+        await addLeftMembers(productId);
+      }
+      if (statusFilter.includes('canceled') || statusFilter.includes('expired')) {
+        await addEndedMemberships(productId);
       }
     }
 

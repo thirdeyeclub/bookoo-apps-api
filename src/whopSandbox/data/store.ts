@@ -2,6 +2,7 @@ import type {
   WhopSandboxCompany,
   WhopSandboxExperience,
   WhopSandboxMember,
+  WhopSandboxMembership,
   WhopSandboxPayment,
   WhopSandboxProduct,
   WhopSandboxUser,
@@ -21,6 +22,8 @@ type Store = {
   productsById: Map<string, WhopSandboxProduct>;
   members: WhopSandboxMember[];
   membersById: Map<string, WhopSandboxMember>;
+  memberships: WhopSandboxMembership[];
+  membershipsById: Map<string, WhopSandboxMembership>;
   payments: WhopSandboxPayment[];
   paymentsById: Map<string, WhopSandboxPayment>;
 };
@@ -170,6 +173,9 @@ export function getStore(seed: string): Store {
   const members: WhopSandboxMember[] = [];
   const membersById = new Map<string, WhopSandboxMember>();
   let memCounter = 1;
+  const memberships: WhopSandboxMembership[] = [];
+  const membershipsById = new Map<string, WhopSandboxMembership>();
+  let mshCounter = 1;
 
   const membersPerProductMin = 20;
   const membersPerProductMax = 120;
@@ -206,6 +212,20 @@ export function getStore(seed: string): Store {
       members.push(member);
       membersById.set(member.id, member);
       if (!isLeft) joinedCount++;
+
+      const endedStatus = isLeft ? rng.pick(['canceled', 'expired'] as const) : 'active';
+      const endedAt = isLeft ? mostRecentActionAt : null;
+      const membership: WhopSandboxMembership = {
+        id: id('msh', mshCounter++),
+        company_id: p.company_id,
+        product_id: p.id,
+        status: endedStatus,
+        started_at: joinedAt,
+        ended_at: endedAt,
+        user,
+      };
+      memberships.push(membership);
+      membershipsById.set(membership.id, membership);
     }
 
     p.member_count = joinedCount;
@@ -261,6 +281,8 @@ export function getStore(seed: string): Store {
     productsById,
     members,
     membersById,
+    memberships,
+    membershipsById,
     payments,
     paymentsById,
   };
