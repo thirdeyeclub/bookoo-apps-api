@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import Whop from '@whop/sdk';
 import { supabase } from '../db/db.js';
+import { createFakeWhopSdk, shouldUseWhopSandbox } from '../whopSandbox/fakeWhopSdk.js';
+import { getSandboxFunnel } from '../whopSandbox/data/funnelsStore.js';
 
 const router = Router();
 
@@ -8,6 +10,12 @@ const sdk = new Whop({
   apiKey: process.env.WHOP_API_KEY || '',
   appID: process.env.WHOP_APP_ID || '',
 });
+
+const sandboxSdk = createFakeWhopSdk();
+
+function getSdk(req: any) {
+  return shouldUseWhopSandbox(req) ? sandboxSdk : sdk;
+}
 
 function parseRangeDays(raw: unknown): number {
   const n = typeof raw === 'string' ? Number(raw) : typeof raw === 'number' ? raw : NaN;
@@ -42,6 +50,7 @@ router.post('/capture', async (req, res) => {
       return res.status(400).json({ error: 'company_id and product_ids are required' });
     }
 
+    const activeSdk = getSdk(req);
     const snapshotAt = new Date().toISOString();
 
     const results: Array<{ product_id: string; member_count: number }> = [];
@@ -53,7 +62,7 @@ router.post('/capture', async (req, res) => {
         most_recent_action_at?: string | null;
       }> = [];
 
-      for await (const member of sdk.members.list({
+      for await (const member of activeSdk.members.list({
         company_id,
         product_ids: [productId],
         statuses: ['joined'],
@@ -64,6 +73,11 @@ router.post('/capture', async (req, res) => {
           joined_at: member.joined_at || null,
           most_recent_action_at: member.most_recent_action_at || null,
         });
+      }
+
+      if (shouldUseWhopSandbox(req)) {
+        results.push({ product_id: productId, member_count: members.length });
+        continue;
       }
 
       if (members.length > 0) {
@@ -146,6 +160,191 @@ router.get('/cohorts', async (req, res) => {
     const now = new Date();
     const since = new Date(now.getTime() - rangeDays * 24 * 60 * 60 * 1000);
     const sinceIso = since.toISOString();
+
+    if (shouldUseWhopSandbox(req)) {
+      const funnel = await getSandboxFunnel(experienceId);
+      if (!funnel) {
+        return res.status(404).json({ error: 'Funnel not found' });
+      }
+
+      const companyId = funnel.company_id as string;
+      const steps: any[] = Array.isArray((funnel as any).steps) ? (funnel as any).steps : [];
+      const productIds: string[] = Array.from(
+        new Set(
+          steps
+            .map((s) => (typeof s?.productId === 'string' ? (s.productId as string) : null))
+            .filter((id): id is string => typeof id === 'string' && id.length > 0),
+        ),
+      );
+
+      const activeSdk = getSdk(req);
+      const snapshotAt = now.toISOString();
+
+      const membershipsByProduct = new Map<
+        string,
+        Array<{ user_id: string; joined_at: string; last_seen_at: string; left_at: string | null }>
+      >();
+
+      const snapshots: Record<string, Array<{ snapshot_at: string; member_count: number }>> = {};
+
+      for (const pid of productIds) {
+        const rows: Array<{ user_id: string; joined_at: string; last_seen_at: string; left_at: string | null }> = [];
+        let activeCount = 0;
+
+        for await (const member of activeSdk.members.list({
+          company_id: companyId,
+          product_ids: [pid],
+          statuses: ['joined', 'left'],
+        } as any)) {
+          if (!member.user?.id) continue;
+          if (!member.joined_at) continue;
+
+          const lastSeenAt = member.most_recent_action_at || member.joined_at || snapshotAt;
+          const leftAt = member.status === 'left' ? (member.most_recent_action_at || snapshotAt) : null;
+          rows.push({
+            user_id: member.user.id,
+            joined_at: member.joined_at,
+            last_seen_at: lastSeenAt,
+            left_at: leftAt,
+          });
+
+          if (member.status === 'joined') activeCount += 1;
+        }
+
+        membershipsByProduct.set(pid, rows);
+        snapshots[pid] = [{ snapshot_at: snapshotAt, member_count: activeCount }];
+      }
+
+      const retentionDays = [7, 30];
+      const retention: Record<string, Record<string, { base: number; retained: number; rate: number }>> = {};
+
+      for (const pid of productIds) {
+        const rows = (membershipsByProduct.get(pid) || []).filter((r) => r.joined_at >= sinceIso);
+        retention[pid] = {};
+
+        for (const d of retentionDays) {
+          const cutoff = new Date(now.getTime() - d * 24 * 60 * 60 * 1000);
+          const eligible = rows.filter((r) => new Date(r.joined_at) <= cutoff);
+          const base = eligible.length;
+
+          let retained = 0;
+          for (const r of eligible) {
+            const joinedAt = new Date(r.joined_at);
+            const target = new Date(joinedAt.getTime() + d * 24 * 60 * 60 * 1000);
+            const lastSeenAt = new Date(r.last_seen_at);
+            const leftAt = r.left_at ? new Date(r.left_at) : null;
+            const ok = lastSeenAt >= target && (!leftAt || leftAt >= target);
+            if (ok) retained += 1;
+          }
+
+          retention[pid][`day${d}`] = {
+            base,
+            retained,
+            rate: base > 0 ? (retained / base) * 100 : 0,
+          };
+        }
+      }
+
+      const orderedSteps = [...steps].sort((a: any, b: any) => (a.order || 0) - (b.order || 0));
+      const stageCohorts: Array<{
+        fromProductId: string;
+        toProductId: string;
+        fromName: string;
+        toName: string;
+        cohorts: Array<{
+          cohort: string;
+          fromCount: number;
+          toCount: number;
+          conversionRate: number;
+          medianHours: number | null;
+          p75Hours: number | null;
+        }>;
+      }> = [];
+
+      for (let i = 0; i < orderedSteps.length - 1; i++) {
+        const fromProductId = orderedSteps[i]?.productId as string | undefined;
+        const toProductId = orderedSteps[i + 1]?.productId as string | undefined;
+        if (!fromProductId || !toProductId) continue;
+
+        const fromName = orderedSteps[i]?.product?.title || `Step ${i + 1}`;
+        const toName = orderedSteps[i + 1]?.product?.title || `Step ${i + 2}`;
+
+        const fromRows = (membershipsByProduct.get(fromProductId) || []).filter((r) => r.joined_at >= sinceIso);
+        const fromByUser = new Map<string, Date>();
+        for (const r of fromRows) fromByUser.set(r.user_id, new Date(r.joined_at));
+        const userIds = Array.from(fromByUser.keys());
+
+        if (userIds.length === 0) {
+          stageCohorts.push({
+            fromProductId,
+            toProductId,
+            fromName,
+            toName,
+            cohorts: [],
+          });
+          continue;
+        }
+
+        const toRows = membershipsByProduct.get(toProductId) || [];
+        const toByUser = new Map<string, Date>();
+        for (const r of toRows) {
+          if (!userIds.includes(r.user_id)) continue;
+          toByUser.set(r.user_id, new Date(r.joined_at));
+        }
+
+        const byCohort = new Map<string, { fromCount: number; toCount: number; deltasHours: number[] }>();
+
+        for (const [uid, fromJoinedAt] of fromByUser.entries()) {
+          const key = getCohortKey(fromJoinedAt);
+          if (!byCohort.has(key)) byCohort.set(key, { fromCount: 0, toCount: 0, deltasHours: [] });
+          const bucket = byCohort.get(key)!;
+          bucket.fromCount += 1;
+
+          const toJoinedAt = toByUser.get(uid);
+          if (toJoinedAt) {
+            const deltaMs = toJoinedAt.getTime() - fromJoinedAt.getTime();
+            if (deltaMs >= 0) {
+              bucket.toCount += 1;
+              bucket.deltasHours.push(deltaMs / (60 * 60 * 1000));
+            }
+          }
+        }
+
+        const cohorts = Array.from(byCohort.entries())
+          .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+          .map(([cohort, v]) => {
+            const sorted = [...v.deltasHours].sort((a, b) => a - b);
+            const medianHours = percentile(sorted, 50);
+            const p75Hours = percentile(sorted, 75);
+            return {
+              cohort,
+              fromCount: v.fromCount,
+              toCount: v.toCount,
+              conversionRate: v.fromCount > 0 ? (v.toCount / v.fromCount) * 100 : 0,
+              medianHours,
+              p75Hours,
+            };
+          });
+
+        stageCohorts.push({
+          fromProductId,
+          toProductId,
+          fromName,
+          toName,
+          cohorts,
+        });
+      }
+
+      return res.json({
+        rangeDays,
+        since: sinceIso,
+        companyId,
+        productIds,
+        snapshots,
+        retention,
+        stageCohorts,
+      });
+    }
 
     const funnelRes = await supabase
       .from('funnels')
@@ -331,9 +530,11 @@ router.get('/cohorts', async (req, res) => {
 
         const toJoinedAt = toByUser.get(uid);
         if (toJoinedAt) {
-          bucket.toCount += 1;
           const deltaMs = toJoinedAt.getTime() - fromJoinedAt.getTime();
-          if (deltaMs >= 0) bucket.deltasHours.push(deltaMs / (60 * 60 * 1000));
+          if (deltaMs >= 0) {
+            bucket.toCount += 1;
+            bucket.deltasHours.push(deltaMs / (60 * 60 * 1000));
+          }
         }
       }
 
