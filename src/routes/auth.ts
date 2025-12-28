@@ -195,15 +195,17 @@ router.get('/revenue/:companyId', async (req, res) => {
       }
     > = {};
 
-    for await (const p of activeSdk.payments.list({
+    const paymentListParams: any = {
       company_id: companyId,
       product_ids: productIds,
       statuses: ['paid'] as any,
-      created_after: since,
       order: 'paid_at',
       direction: 'desc',
       include_free: false,
-    } as any)) {
+    };
+    if (since) paymentListParams.created_after = since;
+
+    for await (const p of activeSdk.payments.list(paymentListParams)) {
       const currency = (p as any).currency || 'unknown';
       const currencyKey = typeof currency === 'string' ? currency : String(currency);
       const productId = (p as any).product?.id as string | undefined;
