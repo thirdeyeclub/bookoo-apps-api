@@ -5,6 +5,7 @@ import funnelsRouter from './routes/funnels.js';
 import authRouter from './routes/auth.js';
 import analyticsRouter from './routes/analytics.js';
 import splashRouter from './routes/splash.js';
+import whopSandboxRouter from './whopSandbox/router.js';
 
 dotenv.config();
 
@@ -18,6 +19,7 @@ app.get('/', (req, res) => {
   res.json({ status: 'running' });
 });
 
+app.use('/whopSandbox/api/v1', whopSandboxRouter);
 app.use('/auth', authRouter);
 app.use('/funnels', funnelsRouter);
 app.use('/analytics', analyticsRouter);

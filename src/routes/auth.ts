@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import Whop from '@whop/sdk';
+import { createFakeWhopSdk, shouldUseWhopSandbox } from '../whopSandbox/fakeWhopSdk.js';
 
 const router = Router();
 
@@ -7,6 +8,12 @@ const sdk = new Whop({
   apiKey: process.env.WHOP_API_KEY || '',
   appID: process.env.WHOP_APP_ID || '',
 });
+
+const sandboxSdk = createFakeWhopSdk();
+
+function getSdk(req: any) {
+  return shouldUseWhopSandbox(req) ? sandboxSdk : sdk;
+}
 
 function parseCsv(value: unknown): string[] {
   if (Array.isArray(value)) return value.flatMap((v) => parseCsv(v));
@@ -35,29 +42,41 @@ function parseRangeDays(value: unknown): number | null {
 
 router.get('/user', async (req, res) => {
   try {
+    const activeSdk = getSdk(req);
     const userToken = req.headers['x-whop-user-token'] as string;
 
     if (!userToken) {
-      return res.status(401).json({ 
+      if (shouldUseWhopSandbox(req)) {
+        const verifiedUser = await activeSdk.verifyUserToken('local');
+        const userId = verifiedUser.userId;
+        const user = await activeSdk.users.retrieve(userId);
+        return res.json({
+          userId: user.id,
+          username: (user as any).username,
+          email: (user as any).email || null,
+          profilePictureUrl: (user as any).profile_picture || null,
+        });
+      }
+      return res.status(401).json({
         error: 'No user token found',
-        dev_mode: true 
+        dev_mode: true,
       });
     }
 
-    const verifiedUser = await sdk.verifyUserToken(userToken);
+    const verifiedUser = await activeSdk.verifyUserToken(userToken);
     const userId = verifiedUser.userId;
 
     if (!userId) {
       return res.status(401).json({ error: 'Invalid user token' });
     }
 
-    const user = await sdk.users.retrieve(userId);
+    const user = await activeSdk.users.retrieve(userId);
 
     res.json({
       userId: user.id,
-      username: user.username,
+      username: (user as any).username,
       email: (user as any).email || null,
-      profilePictureUrl: user.profile_picture || null,
+      profilePictureUrl: (user as any).profile_picture || null,
     });
   } catch (err: any) {
     console.error('Auth error:', err);
@@ -67,25 +86,33 @@ router.get('/user', async (req, res) => {
 
 router.get('/experience/:experienceId', async (req, res) => {
   try {
+    const activeSdk = getSdk(req);
     const { experienceId } = req.params;
     const userToken = req.headers['x-whop-user-token'] as string;
 
     if (!userToken) {
-      return res.status(401).json({ 
+      if (shouldUseWhopSandbox(req)) {
+        const verifiedUser = await activeSdk.verifyUserToken('local');
+        const userId = verifiedUser.userId;
+        const experience = await activeSdk.experiences.retrieve(experienceId);
+        const companyId = (experience as any).company.id;
+        return res.json({ userId, experienceId, companyId });
+      }
+      return res.status(401).json({
         error: 'No user token found',
-        dev_mode: true 
+        dev_mode: true,
       });
     }
 
-    const verifiedUser = await sdk.verifyUserToken(userToken);
+    const verifiedUser = await activeSdk.verifyUserToken(userToken);
     const userId = verifiedUser.userId;
 
     if (!userId) {
       return res.status(401).json({ error: 'Invalid user token' });
     }
 
-    const experience = await sdk.experiences.retrieve(experienceId);
-    const companyId = experience.company.id;
+    const experience = await activeSdk.experiences.retrieve(experienceId);
+    const companyId = (experience as any).company.id;
 
     res.json({
       userId,
@@ -100,10 +127,11 @@ router.get('/experience/:experienceId', async (req, res) => {
 
 router.get('/products/:companyId', async (req, res) => {
   try {
+    const activeSdk = getSdk(req);
     const { companyId } = req.params;
 
     const fetchedProducts = [];
-    for await (const product of sdk.products.list({ company_id: companyId })) {
+    for await (const product of activeSdk.products.list({ company_id: companyId })) {
       fetchedProducts.push({
         id: product.id,
         title: product.title,
@@ -122,6 +150,7 @@ router.get('/products/:companyId', async (req, res) => {
 
 router.get('/revenue/:companyId', async (req, res) => {
   try {
+    const activeSdk = getSdk(req);
     const { companyId } = req.params;
     const productIds = parseCsv(req.query.product_ids || req.query.productIds);
     if (productIds.length === 0) {
@@ -166,7 +195,7 @@ router.get('/revenue/:companyId', async (req, res) => {
       }
     > = {};
 
-    for await (const p of sdk.payments.list({
+    for await (const p of activeSdk.payments.list({
       company_id: companyId,
       product_ids: productIds,
       statuses: ['paid'] as any,
@@ -256,12 +285,13 @@ router.get('/revenue/:companyId', async (req, res) => {
 
 router.get('/members/:companyId/:productId', async (req, res) => {
   try {
+    const activeSdk = getSdk(req);
     const { companyId, productId } = req.params;
 
     const owners = [];
     const statuses = parseCsv(req.query.statuses);
     const statusFilter = statuses.length > 0 ? statuses : ['joined'];
-    for await (const member of sdk.members.list({
+    for await (const member of activeSdk.members.list({
       company_id: companyId,
       product_ids: [productId],
       statuses: statusFilter
@@ -294,6 +324,7 @@ router.get('/members/:companyId/:productId', async (req, res) => {
 
 router.get('/memberships/:companyId', async (req, res) => {
   try {
+    const activeSdk = getSdk(req);
     const { companyId } = req.params;
     const productIds = parseCsv(req.query.product_ids || req.query.productIds);
     if (productIds.length === 0) {
@@ -319,7 +350,7 @@ router.get('/memberships/:companyId', async (req, res) => {
     }> = [];
 
     for (const productId of productIds) {
-      for await (const member of sdk.members.list({
+      for await (const member of activeSdk.members.list({
         company_id: companyId,
         product_ids: [productId],
         statuses: statusFilter,
@@ -355,6 +386,7 @@ router.get('/memberships/:companyId', async (req, res) => {
 
 router.get('/dropoff-users/:companyId/:fromProductId/:toProductId', async (req, res) => {
   try {
+    const activeSdk = getSdk(req);
     const { companyId, fromProductId, toProductId } = req.params;
 
     const fromOwners: Array<{
@@ -370,7 +402,7 @@ router.get('/dropoff-users/:companyId/:fromProductId/:toProductId', async (req, 
 
     const toOwnerIds = new Set<string>();
 
-    for await (const member of sdk.members.list({
+    for await (const member of activeSdk.members.list({
       company_id: companyId,
       product_ids: [toProductId],
       statuses: ['joined'],
@@ -379,7 +411,7 @@ router.get('/dropoff-users/:companyId/:fromProductId/:toProductId', async (req, 
       toOwnerIds.add(member.user.id);
     }
 
-    for await (const member of sdk.members.list({
+    for await (const member of activeSdk.members.list({
       company_id: companyId,
       product_ids: [fromProductId],
       statuses: ['joined'],
