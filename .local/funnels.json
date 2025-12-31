@@ -1,5 +1,5 @@
 {
-  "nextId": 2,
+  "nextId": 3,
   "byExperienceId": {
     "exp_LGYYNHPkhyFxhY": {
       "id": "local_1",
@@ -65,6 +65,71 @@
       "counting_mode": "B",
       "created_at": "2025-12-28T05:43:38.696Z",
       "updated_at": "2025-12-28T05:43:38.696Z"
+    },
+    "exp_000000000001": {
+      "id": "local_2",
+      "experience_id": "exp_000000000001",
+      "company_id": "biz_000000000001",
+      "steps": [
+        {
+          "order": 1,
+          "productId": "prod_000000000004",
+          "product": {
+            "id": "prod_000000000004",
+            "title": "Prime Blueprint",
+            "member_count": 89,
+            "route": "/prime-blueprint",
+            "price": 9999
+          }
+        },
+        {
+          "order": 2,
+          "productId": "prod_000000000005",
+          "product": {
+            "id": "prod_000000000005",
+            "title": "Advanced Sprint",
+            "member_count": 71,
+            "route": "/advanced-sprint",
+            "price": 29999
+          }
+        },
+        {
+          "order": 3,
+          "productId": "prod_000000000001",
+          "product": {
+            "id": "prod_000000000001",
+            "title": "Elite Signals",
+            "member_count": 51,
+            "route": "/elite-signals",
+            "price": 14999
+          }
+        },
+        {
+          "order": 4,
+          "productId": "prod_000000000003",
+          "product": {
+            "id": "prod_000000000003",
+            "title": "Advanced Toolkit",
+            "member_count": 39,
+            "route": "/advanced-toolkit",
+            "price": 14999
+          }
+        },
+        {
+          "order": 5,
+          "productId": "prod_000000000002",
+          "product": {
+            "id": "prod_000000000002",
+            "title": "Advanced Community",
+            "member_count": 46,
+            "route": "/advanced-community",
+            "price": 1999
+          }
+        }
+      ],
+      "counting_mode": "B",
+      "created_at": "2025-12-29T03:38:25.424Z",
+      "updated_at": "2025-12-29T03:38:25.424Z"
     }
   }
 }
